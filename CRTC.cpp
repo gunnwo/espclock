@@ -51,7 +51,7 @@ bool CRTC::setup()
 
 time_t CRTC::now()
 {
-  Serial.println("CRTC::now() - called");
+  //Serial.println("CRTC::now() - called");
   if (!Rtc.IsDateTimeValid()) 
   {
     // Common Cuases:

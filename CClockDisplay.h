@@ -1,7 +1,7 @@
 #ifndef _CCLOCKDISPLAY_H
 #define _CCLOCKDISPLAY_H
 
-//#define SMALLCLOCK
+#define SMALLCLOCK
 
 #include "IDisplay.h"
 #include <TimeLib.h>

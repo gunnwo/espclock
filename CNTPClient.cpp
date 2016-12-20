@@ -31,7 +31,7 @@ void CNTPClient::setTimeServer(IPAddress timeServer)
 time_t CNTPClient::now()
 {
   while (Udp.parsePacket() > 0) ; // discard any previously received packets
-  Serial.println("CNTPClient::now() - Transmit NTP Request");
+  //Serial.println("CNTPClient::now() - Transmit NTP Request");
   sendNTPpacket(m_timeServer);
   uint32_t beginWait = millis();
   while (millis() - beginWait < 1500) {
