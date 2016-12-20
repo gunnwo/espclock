@@ -21,12 +21,10 @@
 #include <ArduinoJson.h>          //https://github.com/bblanchon/ArduinoJson
 
 #include <Ticker.h>
+
+
 Ticker ticker;
-
-#define BLYNK_PRINT Serial        // Comment this out to disable prints and save space
-#include <BlynkSimpleEsp8266.h>
-
-#include "OpcServer.h"            //https://github.com/plasticrake/OpcServer (use a version which includes the following commit: https://github.com/plasticrake/OpcServer/commit/32eafd7d13799ca23b570ec2547ff225f01c015d)
+WiFiServer server(80);
 
 /*
  * ------------------------------------------------------------------------------
@@ -50,15 +48,12 @@ CRGB leds_target[NUM_LEDS];
 
 /*
  * ------------------------------------------------------------------------------
- * Open Pixel Control Server configuration
+ * default RGB init values
  * ------------------------------------------------------------------------------
  */
- 
-const int OPC_PORT = 7890;
-const int OPC_CHANNEL = 1;      // Channel to respond to in addition to 0 (broadcast channel)
-const int OPC_MAX_CLIENTS = 2;  // Maxiumum Number of Simultaneous OPC Clients
-const int OPC_MAX_PIXELS = NUM_LEDS;
-const int OPC_BUFFER_SIZE = OPC_MAX_PIXELS * 3 + OPC_HEADER_BYTES;
+const int INIT_RED = 255;
+const int INIT_GREEN = 127;
+const int INIT_BLUE = 36;
 
 /*
  * ------------------------------------------------------------------------------
@@ -68,7 +63,7 @@ const int OPC_BUFFER_SIZE = OPC_MAX_PIXELS * 3 + OPC_HEADER_BYTES;
  
 //The default values for the NTP server and the Blynk token, if there are different values in config.json, they are overwritten.
 char ntp_server[50] = "0.de.pool.ntp.org";
-char blynk_token[33] = "YOUR_BLYNK_TOKEN";
+char clock_version[15] = "v16.12.20_002";
 
 /*
  * ------------------------------------------------------------------------------
@@ -76,11 +71,12 @@ char blynk_token[33] = "YOUR_BLYNK_TOKEN";
  * ------------------------------------------------------------------------------
  */
 
-uint8_t brightnessNight =  5;
-uint8_t brightnessDay   = 50;
+uint8_t brightnessNight =  100;
+uint8_t brightnessDay   = 200;
 uint8_t brightness = brightnessDay;
 
 bool displayClock = true;
+bool isBrightDay = true;
 
 
 CRTC Rtc;
@@ -94,39 +90,39 @@ Timezone CE(CEST, CET);
 CFadeAnimation ani;
 CClockDisplay clock;
 
+
+
 void updateBrightness(bool force=false)
 {
-  static bool bDay=true;
+	static bool bDay=true;
   
-  if(true == force)
-  {
-    brightness = brightnessDay;
-    Blynk.virtualWrite(V1, brightness);
-    FastLED.setBrightness(brightness);
-    bDay = true;  
-  }
+	if(true == force)
+	{
+		brightness = brightnessDay;
+		FastLED.setBrightness(brightness);
+		bDay = true;  
+	}
   
-  
-  time_t local(CE.toLocal(now()));
-  if(hour(local) >= 22 || hour(local) < 6)
-  {
-    if(true == bDay)
-    {
-      Serial.println("Updating the brightness for the night.");
-      brightness = brightnessNight;
-      Blynk.virtualWrite(V1, brightness);
-      FastLED.setBrightness(brightness);
-      bDay = false;  
-    }
-  }
-  else if (false == bDay)
-  {
-    Serial.println("Updating the brightness for the day.");
-    brightness = brightnessDay;
-    Blynk.virtualWrite(V1, brightness);
-    FastLED.setBrightness(brightness);
-    bDay = true;
-  }
+	time_t local(CE.toLocal(now()));
+	if(hour(local) >= 22 || hour(local) < 6)
+	{
+		isBrightDay = false;
+		if(true == bDay)
+		{
+			Serial.println("Updating the brightness for the night.");
+			brightness = brightnessNight;
+			FastLED.setBrightness(brightness);
+			bDay = false;  
+		}
+	}
+	else if (false == bDay)
+	{
+		isBrightDay = true;
+		Serial.println("Updating the brightness for the day.");
+		brightness = brightnessDay;
+		FastLED.setBrightness(brightness);
+		bDay = true;
+	}
 }
 
 /*
@@ -143,113 +139,6 @@ time_t getDateTimeFromRTC()
   return Rtc.now();
 }
 
-//------------------------------------------------------------------------------
-//Blynk callbacks:
-
-BLYNK_WRITE(V0)
-{
-  CRGB ledcolor;
-  ledcolor.r = param[0].asInt();
-  ledcolor.g = param[1].asInt();
-  ledcolor.b = param[2].asInt();
-  clock.setColor(ledcolor);
-  clock.update(true);
-  //Blynk.virtualWrite(V0, ledcolor.r, ledcolor.g, ledcolor.b);
-}
-
-//BLYNK_READ(V0)
-//{
-//  CRGB ledcolor(clock.getColor());
-//  
-//  Blynk.virtualWrite(V0, ledcolor.r, ledcolor.g, ledcolor.b);
-//}
-
-BLYNK_READ(V1)
-{
-  Blynk.virtualWrite(V1, brightness);
-}
-
-BLYNK_WRITE(V1)
-{
-  brightness = param.asInt();
-  FastLED.setBrightness(brightness);
-}
-
-BLYNK_READ(V2)
-{
-  Blynk.virtualWrite(V2, brightnessDay);
-}
-
-BLYNK_WRITE(V2)
-{
-  brightnessDay = param.asInt();
-  updateBrightness(true);
-}
-
-BLYNK_READ(V3)
-{
-  Blynk.virtualWrite(V3, brightnessNight);
-}
-
-BLYNK_WRITE(V3)
-{
-  brightnessNight = param.asInt();
-  updateBrightness(true);
-}
-
-BLYNK_CONNECTED() {
-  static bool isFirstConnect = true;
-  if (isFirstConnect) {
-    // Request Blynk server to re-send latest values
-    Blynk.syncAll();
-    isFirstConnect = false;
-  }
-  updateBrightness(true);
-  Blynk.virtualWrite(V1, brightness);
-}
-
-//------------------------------------------------------------------------------
-// Open Pixel Protocol callbacks:
-
-// Callback when a full OPC Message has been received
-void cbOpcMessage(uint8_t channel, uint8_t command, uint16_t length, uint8_t* data) {
-  if(0 == channel || 1 == channel)
-  {
-    switch(command)
-    {
-      case 0x00:
-                  for(uint8_t i = 0; i < length/3; i++)
-                  {
-                    leds[i].r = data[i*3+0];
-                    leds[i].g = data[i*3+1];
-                    leds[i].b = data[i*3+2];
-                  }
-                  FastLED.show(brightness);
-                  break;
-      case 0xFF: break;
-    }
-  }
-}
-
-// Callback when a client is connected
-void cbOpcClientConnected(WiFiClient& client) {
-  Serial.print("::cbOpcClientConnected(): New OPC Client: ");
-#if defined(ESP8266) || defined(PARTICLE)
-  Serial.println(client.remoteIP());
-#else
-  Serial.println("(IP Unknown)");
-#endif
-  displayClock = false;
-}
-
-// Callback when a client is disconnected
-void cbOpcClientDisconnected(OpcClient& opcClient) {
-  Serial.print("::cbOpcClientDisconnected(): Client Disconnected: ");
-  Serial.println(opcClient.ipAddress);
-  displayClock = true;
-  clock.update(true);
-  ani.transform(leds, leds_target, NUM_LEDS, true);
-}
 
 //------------------------------------------------------------------------------
 //Ticker callback:
@@ -276,180 +165,482 @@ void cbConfigMode(WiFiManager *myWiFiManager)
   ticker.attach(0.2, cbTick);
 }
 
-//==============================================================================
-// OpcServer Init
-//==============================================================================
-WiFiServer server = WiFiServer(OPC_PORT);
-OpcClient opcClients[OPC_MAX_CLIENTS];
-uint8_t buffer[OPC_BUFFER_SIZE * OPC_MAX_CLIENTS];
-OpcServer opcServer = OpcServer(server, OPC_CHANNEL, opcClients, OPC_MAX_CLIENTS, buffer, OPC_BUFFER_SIZE);
-//------------------------------------------------------------------------------
+
+/*
+* ------------------------------------------------------------------------------
+* clock settings
+* brightness day/night + color Red/Green/Blue
+* NTPserver
+* ------------------------------------------------------------------------------
+*/
+void writeSettings()
+{
+	Serial.println("Write: writing config");
+
+	StaticJsonBuffer<200> jsonBuffer;
+	JsonObject& json = jsonBuffer.createObject();
+	if (json == JsonObject::invalid())
+	{
+		Serial.println("Write: failed to create JSON.");
+		return;
+	}
+
+	json["ntp_server"] = ntp_server;
+	CRGB ledcolor;
+	ledcolor = clock.getColor();
+	json["red"] = ledcolor.r;
+	json["green"] = ledcolor.g;
+	json["blue"] = ledcolor.b;
+	json["day"] = brightnessDay;
+	json["night"] = brightnessNight;
+
+	Serial.println("Write: opening file for writing");
+
+	File configFile = SPIFFS.open("/config.json", "w");
+	if (!configFile)
+	{
+		Serial.println("Write: failed to open config file for writing");
+		return;
+	}
+
+	json.printTo(configFile);
+	json.printTo(Serial); // debug out
+	Serial.println();
+  
+	configFile.close();
+
+	Serial.println("Write: done saving");
+}
 
 
+void readSettings()
+{
+	if (SPIFFS.exists("/config.json"))
+	{
+		//file exists, reading and loading
+		Serial.println("Read: reading config file");
 
+		if (SPIFFS.exists("/config.json"))
+		{
+			File configFile = SPIFFS.open("/config.json", "r");
+			if (configFile)
+			{
+				Serial.println("Read: opened config file");
+				size_t size = configFile.size();
+				// Allocate a buffer to store contents of the file.
+				std::unique_ptr<char[]> buf(new char[size]);
+
+				configFile.readBytes(buf.get(), size);
+
+				StaticJsonBuffer<200> jsonBuffer;
+				JsonObject& json = jsonBuffer.parseObject(buf.get());
+
+				json.printTo(Serial); // debug out
+
+				if (json.success())
+				{
+					Serial.println("\nRead: parsed json");
+          
+					strcpy(ntp_server, json["ntp_server"]);
+
+					brightnessDay = int(json["day"]);
+					brightnessNight = int(json["night"]);
+					brightness = brightnessDay;
+
+					CRGB ledcolor;
+					ledcolor.r = int(json["red"]);
+					ledcolor.g = int(json["green"]);
+					ledcolor.b = int(json["blue"]);
+
+					if (brightnessDay == 0 || brightnessNight == 0 || ( ledcolor.r == 0 && ledcolor.g == 0 && ledcolor.b == 0)) 
+					{      
+						Serial.println("Read: invalid config params, using defaults");
+						setDefaults();
+						shouldSaveConfig = true;
+					}
+					clock.setColor(ledcolor);
+				}
+				else
+				{
+					Serial.println("Read: failed to load json config, using defaults");
+					setDefaults();
+					shouldSaveConfig = true;
+				}
+			}
+		}
+		else
+		{
+			// no config file found, use defaults
+			Serial.println("Read: config not found, using defaults");
+			setDefaults();
+			shouldSaveConfig = true;
+		}
+	}
+}
+
+void setDefaults()
+{
+	brightnessDay = 250;
+	brightnessNight = 150;
+	brightness = brightnessDay;
+
+	CRGB ledcolor;
+	ledcolor.r = INIT_RED;
+	ledcolor.g = INIT_GREEN;
+	ledcolor.b = INIT_BLUE;
+  
+	clock.setColor(ledcolor);
+}
 
 void setup () 
 {
-  Serial.begin(57600);
+	Serial.begin(57600);
 
-  Serial.print("compiled: ");
-  Serial.print(__DATE__);
-  Serial.println(__TIME__);
+	Serial.println();
+	Serial.print("compiled: ");
+	Serial.print(__DATE__);
+	Serial.println(__TIME__);
 
-  //FastLED.setMaxPowerInVoltsAndMilliamps(5,1000); 
-  FastLED.addLeds<APA102, DATA_PIN, CLOCK_PIN, BGR>(leds, NUM_LEDS);
-  //FastLED.setCorrection(0xF0FFF7);
-  //FastLED.setTemperature(Tungsten40W);
+	FastLED.addLeds<APA102, DATA_PIN, CLOCK_PIN, BGR>(leds, NUM_LEDS);
 
-  FastLED.setBrightness(brightness);
+	FastLED.setBrightness(brightness);
 
-  fill_solid( &(leds[0]), NUM_LEDS, CRGB::Black);
-  FastLED.show();
+	fill_solid( &(leds[0]), NUM_LEDS, CRGB::Black);
+	FastLED.show();
 
-  ticker.attach(0.6, cbTick);
+	ticker.attach(0.6, cbTick);
 
-  //read configuration from FS json
-  Serial.println("mounting FS...");
+	//read configuration from FS json
+	Serial.println("Setup: mounting FS...");
 
-  if (SPIFFS.begin()) {
-    Serial.println("mounted file system");
-    if (SPIFFS.exists("/config.json")) {
-      //file exists, reading and loading
-      Serial.println("reading config file");
-      File configFile = SPIFFS.open("/config.json", "r");
-      if (configFile) {
-        Serial.println("opened config file");
-        size_t size = configFile.size();
-        // Allocate a buffer to store contents of the file.
-        std::unique_ptr<char[]> buf(new char[size]);
+	if (SPIFFS.begin()) 
+	{
+		Serial.println("Setup: mounted file system");
+		readSettings();
+	} 
+	else 
+	{
+		Serial.println("Setup: failed to mount FS");
+	}
+	//end read
 
-        configFile.readBytes(buf.get(), size);
-        DynamicJsonBuffer jsonBuffer;
-        JsonObject& json = jsonBuffer.parseObject(buf.get());
-        json.printTo(Serial);
-        if (json.success()) {
-          Serial.println("\nparsed json");
+	WiFiManager wifiManager;
+	wifiManager.setAPCallback(cbConfigMode);
+	wifiManager.setSaveConfigCallback(cbSaveConfig);
 
-          strcpy(ntp_server, json["ntp_server"]);
-          strcpy(blynk_token, json["blynk_token"]);
+	WiFiManagerParameter custom_ntp_server("server", "NTP server", ntp_server, 50);
+	wifiManager.addParameter(&custom_ntp_server);
 
-        } else {
-          Serial.println("failed to load json config");
-        }
-      }
-    }
-  } else {
-    Serial.println("failed to mount FS");
-  }
-  //end read
+	//reset settings - for testing
+	//wifiManager.resetSettings();
 
+	if (!wifiManager.autoConnect("ESPClockAP")) 
+	{
+		Serial.println("Setup: failed to connect and hit timeout");
+		delay(3000);
+		//reset and try again, or maybe put it to deep sleep
+		ESP.reset();
+		delay(5000);
+	}
 
-  WiFiManager wifiManager;
-  wifiManager.setAPCallback(cbConfigMode);
-  wifiManager.setSaveConfigCallback(cbSaveConfig);
+	//if you get here you have connected to the WiFi
+	Serial.println("Setup: connected...yeey :)");
 
-  WiFiManagerParameter custom_ntp_server("server", "NTP server", ntp_server, 50);
-  wifiManager.addParameter(&custom_ntp_server);
+	//read updated parameters
+	strcpy(ntp_server, custom_ntp_server.getValue());
 
-  WiFiManagerParameter custom_blynk_token("blynk", "blynk token", blynk_token, 33);
-  wifiManager.addParameter(&custom_blynk_token);
-
-  //reset settings - for testing
-  //wifiManager.resetSettings();
-
-  if (!wifiManager.autoConnect("ESPClockAP")) {
-    Serial.println("failed to connect and hit timeout");
-    delay(3000);
-    //reset and try again, or maybe put it to deep sleep
-    ESP.reset();
-    delay(5000);
-  }
-
-  //if you get here you have connected to the WiFi
-  Serial.println("connected...yeey :)");
-
-  //read updated parameters
-  strcpy(ntp_server, custom_ntp_server.getValue());
-  strcpy(blynk_token, custom_blynk_token.getValue());
-
-  //save the custom parameters to FS
-  if (shouldSaveConfig) {
-    Serial.println("saving config");
-    DynamicJsonBuffer jsonBuffer;
-    JsonObject& json = jsonBuffer.createObject();
-    json["ntp_server"] = ntp_server;
-    json["blynk_token"] = blynk_token;
-
-    File configFile = SPIFFS.open("/config.json", "w");
-    if (!configFile) {
-      Serial.println("failed to open config file for writing");
-    }
-
-    json.printTo(Serial);
-    json.printTo(configFile);
-    configFile.close();
-    //end save
-  }
+	//save the custom parameters to FS
+	if (shouldSaveConfig) 
+	{
+		writeSettings();
+	}
   
-  Serial.print("IP number assigned by DHCP is ");
-  Serial.println(WiFi.localIP());
+	Serial.print("Setup: IP number assigned by DHCP is ");
+	Serial.println(WiFi.localIP());
 
-  Serial.print("Blynk token: ");
-  Serial.println(blynk_token);
+	IPAddress timeServerIP;
+	WiFi.hostByName(ntp_server, timeServerIP);
+	Serial.print("NTP Server: ");
+	Serial.print(ntp_server);
+	Serial.print(" - ");
+	Serial.println(timeServerIP);
 
-  IPAddress timeServerIP;
-  WiFi.hostByName(ntp_server, timeServerIP);
-  Serial.print("NTP Server: ");
-  Serial.print(ntp_server);
-  Serial.print(" - ");
-  Serial.println(timeServerIP);
+	Rtc.setup();
+	Ntp.setup(timeServerIP);
+	Rtc.setSyncProvider(&Ntp);
+	setSyncProvider(getDateTimeFromRTC);
 
-  Rtc.setup();
-  Ntp.setup(timeServerIP);
-  Rtc.setSyncProvider(&Ntp);
-  setSyncProvider(getDateTimeFromRTC);
-
-  updateBrightness();
+	updateBrightness();
   
-  clock.setup(&(leds_target[0]), NUM_LEDS);
-  clock.setTimezone(&CE);
+	clock.setup(&(leds_target[0]), NUM_LEDS);
+	clock.setTimezone(&CE);
 
-  opcServer.setMsgReceivedCallback(cbOpcMessage);
-  opcServer.setClientConnectedCallback(cbOpcClientConnected);
-  opcServer.setClientDisconnectedCallback(cbOpcClientDisconnected);
+	// Start the Wifi server
+	server.begin();
+	Serial.println("Setup: wifi web server started");
   
-  opcServer.begin();
-  
-  Serial.print("\nOPC Server: ");
-  Serial.print(WiFi.localIP());
-  Serial.print(":");
-  Serial.println(OPC_PORT);
-
-  Blynk.config(blynk_token);
-  ticker.detach();
+	ticker.detach();
 }
 
 void loop () 
 {
-  if (timeSet != timeStatus())
+	if (timeSet != timeStatus())
+	{
+		Serial.println("Loop: Time is not set. The time & date are unknown.");
+	}
+
+	updateBrightness();
+
+	if(displayClock)
+	{
+		bool changed = clock.update();
+		ani.transform(leds, leds_target, NUM_LEDS, changed);
+		FastLED.show();
+	}
+
+	/*
+	* webserver implementation
+	*/
+
+	WiFiClient client = server.available();
+	if (!client)
+	{
+		return;
+	}
+
+	// Wait until the client sends some data
+	Serial.println("Wifi Server: new client");
+	unsigned long ultimeout = millis() + 250;
+	while (!client.available() && (millis()<ultimeout))
+	{
+		delay(1);
+	}
+
+	if (millis()>ultimeout)
+	{
+		Serial.println("Wifi Server: client connection time-out!");
+		return;
+	}
+
+	// Read the first line of the request
+	String sRequest = client.readStringUntil('\r');
+	
+	client.flush();
+
+	// stop client, if request is empty
+	if (sRequest == "")
+	{
+		Serial.println("Wifi Server: empty request! - stopping client");
+		client.stop();
+		return;
+	}
+
+	// get path; end of path is either space or ?
+	// Syntax is e.g. GET /?pin=MOTOR1STOP HTTP/1.1
+	String sPath = "", sParam = "", sCmd = "";
+	String sGetstart = "GET ";
+	int iStart, iEndSpace, iEndQuest;
+	iStart = sRequest.indexOf(sGetstart);
+	if (iStart >= 0)
+	{
+		iStart += +sGetstart.length();
+		iEndSpace = sRequest.indexOf(" ", iStart);
+		iEndQuest = sRequest.indexOf("?", iStart);
+
+		// are there parameters?
+		if (iEndSpace>0)
+		{
+			if (iEndQuest>0)
+			{
+				// there are parameters
+				sPath = sRequest.substring(iStart, iEndQuest);
+				sParam = sRequest.substring(iEndQuest, iEndSpace);
+			}
+			else
+			{
+				// NO parameters
+				sPath = sRequest.substring(iStart, iEndSpace);
+			}
+		}
+	}
+
+  ///////////////////////////////////////////////////////////////////////////////
+  // output parameters to serial, you may connect e.g. an Arduino and react on it
+  if (sParam.length()>0)
   {
-    Serial.println("Time is not set. The time & date are unknown.");
-    //TODO what shall we do in this case? 
+    int iEqu = sParam.indexOf("?");
+    if (iEqu >= 0)
+    {
+      sCmd = sParam.substring(iEqu + 1, sParam.length());
+      Serial.print("CMD: ");
+      Serial.println(sCmd);
+    }
   }
 
-  updateBrightness();
 
-  if(displayClock)
+  // format the html response
+  String sResponse, sHeader;
+  if (sPath != "/")
   {
-    bool changed = clock.update();
-    ani.transform(leds, leds_target, NUM_LEDS, changed);
+    // 404 for non-matching path
+    sResponse = "<html><head><title>404 Not Found</title></head><body><h1>Not Found</h1><p>The requested URL was not found on this server.</p></body></html>";
 
-    FastLED.show();
+    sHeader = "HTTP/1.1 404 Not found\r\n";
+    sHeader += "Content-Length: ";
+    sHeader += sResponse.length();
+    sHeader += "\r\n";
+    sHeader += "Content-Type: text/html\r\n";
+    sHeader += "Connection: close\r\n";
+    sHeader += "\r\n";
+  }
+  else
+  {
+    // format the html page
+
+    // react on parameters
+    if (sCmd.length()>0)
+    {
+      int iEqu = sParam.indexOf("=");
+      int iVal;
+      if (iEqu >= 0)
+      {
+        iVal = sParam.substring(iEqu + 1, sParam.length()).toInt() ;
+      }
+
+      // switch GPIO
+      if (sCmd.indexOf("RED") >= 0)
+      {
+        CRGB ledcolor;
+        ledcolor = clock.getColor();
+        ledcolor.r = iVal;
+        clock.setColor(ledcolor);
+        clock.update(true);
+      }
+      else if (sCmd.indexOf("GREEN") >= 0)
+      {
+        CRGB ledcolor;
+        ledcolor = clock.getColor();
+        ledcolor.g = iVal;
+        clock.setColor(ledcolor);
+        clock.update(true);
+      }
+      else if (sCmd.indexOf("BLUE") >= 0)
+      {
+        CRGB ledcolor;
+        ledcolor = clock.getColor();
+        ledcolor.b = iVal;
+        clock.setColor(ledcolor);
+        clock.update(true);
+      }
+      else if (sCmd.indexOf("DAY") >= 0)
+      {
+        brightnessDay = iVal;
+        updateBrightness(true);
+      }
+      else if (sCmd.indexOf("NIGHT") >= 0)
+      {
+        brightnessNight = iVal;
+        updateBrightness(true);
+      }
+      writeSettings();
+    }
+
+    CRGB ledcolor;
+    ledcolor = clock.getColor();
+
+#ifdef SMALLCLOCK
+    sResponse = "<html><head><title>Konfiguration WordClock (klein)</title>";
+#else
+    sResponse = "<html><head><title>Konfiguration WordClock (gross)</title>";
+#endif
+    sResponse = 
+    sResponse += "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0, user-scalable=yes\">";
+#ifdef SMALLCLOCK
+    sResponse += "</head><body style='font-family:verdana;background:#FFFFEE'>";
+#else
+    sResponse += "</head><body style='font-family:verdana;background:#E0E0E0'>";
+#endif
+    sResponse += "<h1>Word Clock</h1>";
+    sResponse += "<h3>Helligkeit</h3>\r\n";
+	sResponse += "<table><tr><td width='100'>";
+	if (isBrightDay)
+		sResponse += "<u>";
+	sResponse += "bei Tag";
+	if (isBrightDay)
+		sResponse += "</u>";
+	sResponse += "</td><td><input onchange=\"window.location.href='?DAY='+this.value;\" value='";
+    sResponse += brightnessDay;
+    sResponse += "' min='0' max='255' type='range'>";
+    sResponse += brightnessDay;
+	sResponse += "</td></tr>\r\n";
+	sResponse += "<tr><td width='100'>";
+	if (!isBrightDay)
+		sResponse += "<u>";
+	sResponse += "bei Nacht";
+	if (!isBrightDay)
+		sResponse += "</u>";
+	sResponse += "</td><td><input onchange=\"window.location.href='?NIGHT='+this.value;\" value='";
+    sResponse += brightnessNight;
+    sResponse += "' min='0' max='255' type='range'>";
+    sResponse += brightnessNight;
+	sResponse += "</td></tr></table>\r\n";
+	sResponse += "<h3>Farbe</h3>";
+    sResponse += "<table><tr><td width='100'>Rot</td>";
+    sResponse += "<td><input onchange=\"window.location.href='?RED='+this.value;\" value='";
+    sResponse += ledcolor.r;
+    sResponse += "' min='0' max='255' type='range'>";
+    sResponse += ledcolor.r;
+    sResponse += "</td></tr>\r\n";
+    sResponse += "<tr><td width='100'>Gr&uuml;n</td>";
+    sResponse += "<td><input onchange=\"window.location.href='?GREEN='+this.value;\" value='";
+    sResponse += ledcolor.g;
+    sResponse += "' min='0' max='255' type='range'>";
+    sResponse += ledcolor.g;
+    sResponse += "</td></tr>\r\n";
+    sResponse += "<tr><td width='100'>Blau</td>";
+    sResponse += "<td><input onchange=\"window.location.href='?BLUE='+this.value;\" value='";
+    sResponse += ledcolor.b;
+    sResponse += "' min='0' max='255' type='range'>";
+    sResponse += ledcolor.b;
+    sResponse += "</td></tr></table>\r\n";
+
+    sResponse += "<br/><br/><table><tr><td width='100'>Zeitserver</td>";
+    sResponse += "<td>";
+    sResponse += ntp_server;
+    sResponse += "</td></tr>\r\n";
+/*
+    sResponse += "<tr><td width='100'>Sync</td>";
+    sResponse += "<td>";
+    time_t lastSync (CE.toLocal(Ntp.getLastSync()));
+    sResponse += hour(lastSync);
+    sResponse += ":";
+    sResponse += minute(lastSync);
+    sResponse += ".";
+    sResponse += second(lastSync);
+    sResponse += "</td></tr>\r\n";
+*/
+    sResponse += "<tr><td width='100'>Software</td>";
+    sResponse += "<td>";
+    sResponse += clock_version;
+    sResponse += "</td></tr></table>\r\n";
+    sResponse += "</body></html>";
+
+    sHeader = "HTTP/1.1 200 OK\r\n";
+    sHeader += "Content-Length: ";
+    sHeader += sResponse.length();
+    sHeader += "\r\n";
+    sHeader += "Content-Type: text/html\r\n";
+    sHeader += "Connection: close\r\n";
+    sHeader += "\r\n";
   }
 
-  opcServer.process();
+  // Send the response to the client
+  client.print(sHeader);
+  client.print(sResponse);
 
-  Blynk.run();
+  // and stop the client
+  client.stop();
+  Serial.println("Wifi Server: Client disonnected");
 }
 
 

@@ -31,6 +31,8 @@
   
   The values of the array have to be <= NUMBER_OF_LEDS - 1.
 */
+
+
 const int ES[]      = { 0, 1, -1 };
 const int IST[]     = { 3, 4, 5, -1 };
 const int FUENF_M[] = { 7, 8, 9, 10, -1 };
@@ -353,6 +355,8 @@ void CClockDisplay::display_time(const int hour, const int minute) {
     default: break;
   }
   
+  Serial.println("");
+
   display_hour(displayHour, roundMinute, hour);
   
 }
